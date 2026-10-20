@@ -1,0 +1,10 @@
+{
+  "name": "campus-connect",
+  "version": "1.0.0",
+  "description": "Campus Connect - Complete Offline-First Platform for College Societies",
+  "scripts": {
+    "server": "npm --prefix server start",
+    "client": "npm --prefix client dev",
+    "test": "npm --prefix server test"
+  }
+}
