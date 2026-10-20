@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 
 // ================= DATA (edit here) =================
 // On your computer the generator runs on port 3100. When hosted online, the website and server share one address.
+const MAX_MB = 10; // total size of files per processing run (kept small for a small hosted server)
 const API = import.meta.env.DEV ? 'http://localhost:3100' : '';
 // Talks to the generator server and sends the student's login token with every request.
 async function api(path, opts = {}) {
@@ -111,8 +112,8 @@ async function generate(subject, files) {
   const list = Object.entries(files).flatMap(([slot, arr]) => arr.map(f => ({ slot, ...f })));
   try { return await api('/api/generate', { method: 'POST', body: JSON.stringify({ subject: subject.name, code: subject.code, files: list }) }); }
   catch (e) { if (e.status) throw e; /* no status means the server is not running */ }
-  if (subject.units) return pick(subject);
-  throw new Error('The generator server is not running. Start it (see the ai-server folder), then press Process again. Your files are saved.');
+  if (import.meta.env.DEV && subject.units) return pick(subject); // demo content only on your own computer
+  throw new Error('Could not reach the server. It may be waking up, which can take up to a minute. Please wait a moment and press Process again. Your files are saved.');
 }
 
 function Work({ subject, onOpen }) {
@@ -128,7 +129,7 @@ function Work({ subject, onOpen }) {
   const add = async (slot, list) => { const added = await Promise.all([...list].map(read)); const have = new Set(files[slot].map(x => x.name)); persist({ ...files, [slot]: [...files[slot], ...added.filter(x => !have.has(x.name))] }); };
   const remove = (slot, name) => persist({ ...files, [slot]: files[slot].filter(x => x.name !== name) });
   const mb = Object.values(files).flat().reduce((n, f) => n + f.data.length * 0.75, 0) / 1e6;
-  const ready = files.pdf.length > 0 && mb < 15;
+  const ready = files.pdf.length > 0 && mb < MAX_MB;
   const run = async () => {
     setBusy(true); setErr('');
     try { const g = await generate(subject, files); localStorage.setItem('examsprint_gen_' + key, JSON.stringify(g)); setGen(g); api('/api/state/' + sk, { method: 'PUT', body: JSON.stringify({ value: g }) }).catch(() => {}); }
@@ -143,12 +144,12 @@ function Work({ subject, onOpen }) {
         {files[k].map(f => <div key={f.name} className="q" style={{ fontWeight: 400, marginTop: 6 }}><span>{f.name}</span><button className="link" onClick={() => remove(k, f.name)}>Remove</button></div>)}
         <input type="file" multiple accept=".pdf,.txt,.md" style={{ marginTop: 10, marginBottom: 0 }} onChange={e => { add(k, e.target.files); e.target.value = ''; }} />
       </div>))}
-    <p className="sub">{files.pdf.length} course PDF(s) added · {mb.toFixed(1)} MB in total (limit about 15 MB per run). Without question papers, practice questions are written from your notes instead.</p>
+    <p className="sub">{files.pdf.length} course PDF(s) added · {mb.toFixed(1)} MB in total (limit about {MAX_MB} MB per run). Without question papers, practice questions are written from your notes instead.</p>
     {err && <p style={{ color: '#f87171', marginBottom: 12 }}>{err}</p>}
     <button className="primary" disabled={!ready || busy} onClick={run} style={!ready || busy ? { opacity: .5, cursor: 'not-allowed' } : {}}>
       {busy ? 'Processing... this can take a few minutes' : gen ? 'Process again' : 'Process my material'}</button>
     {!files.pdf.length && <p className="sub" style={{ marginTop: 8 }}>Add at least one course PDF to continue.</p>}
-    {mb >= 15 && <p className="sub" style={{ marginTop: 8 }}>Too much at once. Remove a few files and process in two rounds.</p>}
+    {mb >= MAX_MB && <p className="sub" style={{ marginTop: 8 }}>Too much at once. Remove a few files and process in two rounds.</p>}
     {gen && <><h2>Step 2: Your study material is ready</h2>
       <div className="grid4">{WINDOWS.map(([k, t, d]) => <button key={k} className="big" onClick={() => onOpen(k, gen)}>{t}<small>{d}</small></button>)}</div></>}
   </>);
@@ -195,7 +196,7 @@ function Notes({ s }) {
   const offline = text => {
     const low = text.toLowerCase();
     const t = (s.topics || []).find(x => (x.keys || []).some(k => low.includes(k.toLowerCase())));
-    return t ? (SIMPLE.some(w => low.includes(w)) ? t.simple : t.plain) : 'I could not reach the generator server, and I do not have this topic offline.';
+    return t ? (SIMPLE.some(w => low.includes(w)) ? t.simple : t.plain) : 'I could not reach the server right now. Please try again in a moment.';
   };
   const ask = async () => {
     const text = q.trim(); if (!text || busy) return;
@@ -252,7 +253,7 @@ function Auth({ onDone }) {
       const j = await api('/api/' + mode, { method: 'POST', body: JSON.stringify(mode === 'signup' ? { name, roll, password: f.pw } : { roll, password: f.pw }) });
       localStorage.setItem('examsprint_token', j.token); localStorage.setItem('examsprint_user', JSON.stringify(j.user));
       onDone(j.user);
-    } catch (e) { setErr(e.status ? e.message : 'Cannot reach the server. Start the ai-server (npm start) and try again.'); }
+    } catch (e) { setErr(e.status ? e.message : 'Could not reach the server. It may be waking up, which can take up to a minute. Please try again shortly.'); }
     setBusy(false);
   };
   const key = e => e.key === 'Enter' && submit();
@@ -303,6 +304,28 @@ export default function App() {
     api('/api/state/custom').then(j => j.value && setCustom(j.value)).catch(() => {});
   }, [user?.roll]);
 
+  // ----- Browser Back / Forward buttons move one screen at a time inside the app -----
+  const snap = (scr, subj, w) => ({ app: 1, screen: scr, branch, sem, sub: subj ? { name: subj.name, code: subj.code } : null, win: w || null });
+  const go = (scr, subj, w) => { history.pushState(snap(scr, subj, w), ''); setScreen(scr); };
+  useEffect(() => { history.replaceState(snap('pick'), ''); }, []);
+  useEffect(() => {
+    const onPop = e => {
+      const st = e.state;
+      if (!st || !st.app || st.screen === 'pick') { if (st && st.app) { setBranch(st.branch); setSem(st.sem); } setScreen('pick'); return; }
+      const ck = `${st.branch}-${st.sem}`;
+      const list = [...(SUBJECTS[ck] || []), ...(custom[ck] || []).map(x => ({ ...x, custom: true }))];
+      const found = list.find(x => x.name === st.sub?.name && x.code === st.sub?.code);
+      if (!found) { setScreen('pick'); return; }
+      setBranch(st.branch); setSem(st.sem); setSubject(found);
+      if (st.screen === 'win') {
+        let g = null; try { g = JSON.parse(localStorage.getItem('examsprint_gen_' + (found.code || found.name))); } catch { /* none saved */ }
+        if (g) { setWin(st.win); setGen(g); setScreen('win'); } else setScreen('work');
+      } else setScreen('work');
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [custom]);
+
   if (!user) return <Auth onDone={setUser} />;
 
   if (screen === 'pick') {
@@ -318,17 +341,17 @@ export default function App() {
         <div><label>Semester</label><select value={sem} onChange={e => setSem(+e.target.value)}>{[1, 2, 3, 4, 5, 6, 7, 8].map(n => <option key={n} value={n}>Semester {n}</option>)}</select></div></div>
       {list.length === 0 && <Empty>{sem === 8 ? 'Semester 8 subjects are not announced yet.' : `No subjects added for ${branch} Semester ${sem} yet.`} Use the Add subject button below.</Empty>}
       {list.map(x => (<React.Fragment key={x.name + x.code}>
-        <button className="card subject" onClick={() => { setSubject(x); setScreen('work'); }}>
-          <b>{x.name}</b><small>{x.code || 'No code'}</small></button>
+        <button className="card subject" onClick={() => { setSubject(x); go('work', x); }}>
+          <b>{x.name}</b><small>{x.code || 'No code'}{x.papers ? ` · ${x.papers} papers` : ''}</small></button>
         {x.custom && <button className="link" style={{ marginTop: -4, marginBottom: 10 }} onClick={() => delSub(x.name)}>Remove "{x.name}"</button>}
       </React.Fragment>))}
       <AddSubject onAdd={addSub} /></div>); }
 
   if (screen === 'work') return (<div className="wrap"><Top user={user} onLogout={logout} />
-    <button className="link" onClick={() => setScreen('pick')}>← All subjects</button><h1>{subject.name}</h1><p className="sub">{subject.code}</p>
-    <Work subject={subject} onOpen={(k, g) => { setWin(k); setGen(g); setScreen('win'); }} /></div>);
+    <button className="link" onClick={() => history.back()}>← All subjects</button><h1>{subject.name}</h1><p className="sub">{subject.code}</p>
+    <Work subject={subject} onOpen={(k, g) => { setWin(k); setGen(g); go('win', subject, k); }} /></div>);
 
   const View = VIEW[win]; const title = WINDOWS.find(w => w[0] === win)[1];
   return (<div className="wrap"><Top user={user} onLogout={logout} />
-    <button className="link" onClick={() => setScreen('work')}>← {subject.name}</button><h1>{title}</h1><p className="sub">{subject.name}</p><View s={{ ...subject, ...gen }} /></div>);
+    <button className="link" onClick={() => history.back()}>← {subject.name}</button><h1>{title}</h1><p className="sub">{subject.name}</p><View s={{ ...subject, ...gen }} /></div>);
 }

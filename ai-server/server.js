@@ -25,7 +25,7 @@ async function gemini(parts, asJson, tries = 6) {
   if (!KEY) throw new Error('GEMINI_API_KEY is missing. Add it to the .env file in the ai-server folder.');
   const body = { contents: [{ parts }] };
   if (asJson) body.generationConfig = { responseMimeType: 'application/json' };
-  let attempt = 0;
+  let attempt = 0, netFails = 0;
   while (true) {
     const now = Date.now();
     const live = MODELS.filter(m => (blocked.get(m) || 0) <= now);
@@ -34,9 +34,19 @@ async function gemini(parts, asJson, tries = 6) {
       throw new Error(`The free daily limit is used up for every model in your list. The first one resets in about ${Math.floor(secs / 3600)}h ${Math.round((secs % 3600) / 60)}m. Please try again then, or add more models to GEMINI_MODELS in the .env file.`);
     }
     const model = live[0];
-    const r = await fetch(`${BASE}/models/${model}:generateContent`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': KEY }, body: JSON.stringify(body),
-    });
+    let r;
+    try {
+      r = await fetch(`${BASE}/models/${model}:generateContent`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': KEY }, body: JSON.stringify(body),
+        signal: AbortSignal.timeout(Number(process.env.GEMINI_TIMEOUT_MS) || 240000),
+      });
+    } catch (e) {
+      // Google did not answer in time, or the connection dropped.
+      if (++netFails >= 3) throw new Error("Could not get an answer from Google's AI service. Please press Process again in a moment.");
+      log(`No answer from Google (${e.cause?.code || e.name}). Retrying in 5s...`);
+      await sleep(5000);
+      continue;
+    }
     const j = await r.json();
     if (r.ok) return (j.candidates?.[0]?.content?.parts || []).map(p => p.text).join('');
     const msg = j.error?.message || '';
@@ -258,6 +268,12 @@ ${String(notes || '').slice(0, 120000)}
 STUDENT QUESTION: ${String(question || '').slice(0, 2000)}`;
     res.json({ answer: await gemini([{ text: prompt }], false) });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Friendly message when the uploaded files are too large for one request.
+app.use((err, req, res, next) => {
+  if (err.type === 'entity.too.large') return res.status(413).json({ error: 'These files are too large to send at once. Please upload fewer or smaller PDFs and try again.' });
+  next(err);
 });
 
 // Serves the built website (client/dist) so the whole app is one service on one web address.
