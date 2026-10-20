@@ -1,93 +1,119 @@
-# Campus Connect 🎓
+# ExamSprint
 
-> **Offline-first PWA for college societies and clubs that enables resilient notice boards, cryptographic rotating QR meet attendance, time-decay activity tracking, automated titles/badges, and transparent dues/ledger management on flaky or zero network connections.**
+An AI exam-prep web app for college students. Upload your course PDFs and previous year question papers, and ExamSprint turns them into chapter-wise study notes, diagrams and a list of the most important exam questions, then lets you ask follow-up questions to an AI tutor.
 
----
+**Live demo:** https://examsprint-77hi.onrender.com
 
-## 🌟 The Pitch (For Your Resume)
+> The demo runs on a free hosting plan. The first load after a quiet period can take up to a minute, and accounts or saved material may be reset when the server restarts.
 
-> *"Built Campus Connect, an offline-first PWA for campus societies featuring cryptographic HMAC-SHA256 rotating QR attendance (works 100% offline), event-sourced 30-day activity scoring with exponential decay, automated rule-based titles/badges, sequenced chat, and a transparent append-only society fund ledger with zero-dependency native SQLite and IndexedDB outbox synchronization."*
+<!-- Add a screenshot here, for example: ![ExamSprint home screen](screenshots/home.png) -->
 
----
+## What it does
 
-## ⚡ Quick Start
+- **Chapter-wise summaries.** Every uploaded course PDF is summarised on its own, chapter by chapter, in simple language, so nothing gets skipped.
+- **Key topics and one-liners.** Short explanations, plain-language versions with everyday analogies, and quick definitions or formulas for revision.
+- **Derivations and diagrams.** Step-by-step derivations and algorithms found in the notes, plus Mermaid diagrams for processes, flows, layers and states.
+- **Important questions from past papers.** Upload previous year papers and get questions grouped as 2, 5 and 10 marks, with a count of how many papers each question appears in. Answers are written only from your notes. If you upload no papers, practice questions are written from your notes instead.
+- **AI tutor chat.** Ask questions about a subject and get Markdown answers that can include Mermaid diagrams.
+- **Accounts.** Sign up with name, roll number and password. Each student's generated material and added subjects are saved to their own account.
+- **Optional signup allow-list.** Put approved roll numbers in `ai-server/allowed-rolls.txt` (one per line) and only those students can sign up.
 
-### Prerequisites
-- Node.js (v20+ or v24+)
+## How it works
 
-### 1-Click Launch (Windows)
-Double-click `start.bat` in the root folder, or run in terminal:
+ExamSprint is not a RAG pipeline. There is no chunking, embedding or vector search. The server sends the uploaded PDFs directly to Gemini, which reads them natively, together with a detailed prompt that tells it what to produce. Course PDFs are summarised one at a time, then the combined summary is used to write model answers for the questions found in the past papers.
 
-```bash
-# Terminal 1: Start Backend (Port 5000)
-cd server
-npm start
+## Tech stack
 
-# Terminal 2: Start Frontend PWA (Port 3000)
-cd client
-npm run dev
+| Part | Technology |
+|---|---|
+| Frontend | React 19, Vite, Tailwind CSS, Mermaid, react-markdown, lucide-react |
+| Backend | Node.js (22.13 or newer), Express |
+| Database | SQLite through Node's built-in `node:sqlite` |
+| AI | Google Gemini API |
+| Hosting | Render |
+
+## Security and fair use
+
+- Passwords are stored as salted `scrypt` hashes, never in plain text.
+- Login uses random session tokens that expire after 30 days.
+- Eight wrong password attempts lock a roll number for 10 minutes.
+- Each student has a daily limit on generations and chat messages, so one person cannot use up the Gemini quota.
+- The Gemini key lives only on the server, in environment variables. It is never sent to the browser.
+
+## Reliability
+
+- If Gemini asks the server to slow down, the server waits for the time Google gives and retries automatically.
+- If a model's daily allowance runs out, the server switches to the next model in the `GEMINI_MODELS` list.
+- Course PDFs are processed one at a time by default to stay inside free-tier rate limits.
+
+## Project structure
+
+```
+ExamSprint/
+├── ai-server/        Express server: accounts, saved data, Gemini calls, serves the built site
+│   ├── server.js
+│   └── package.json
+└── client/           React app (Vite)
+    ├── src/
+    └── package.json
 ```
 
-Open your browser at **http://localhost:3000**.
+## Run it locally
 
----
+You need Node.js 22.13 or newer and a Gemini API key from [Google AI Studio](https://aistudio.google.com).
 
-## 🏗️ Architecture & Technical Core
+1. **Set up the server.**
+   ```
+   cd ai-server
+   npm install
+   ```
+   Create a file named `.env` inside `ai-server`:
+   ```
+   GEMINI_API_KEY=your_key_here
+   GEMINI_MODELS=model-name-1,model-name-2
+   ```
+   Use the model names currently offered in your Google AI Studio account.
 
-### 1. Offline-First Sync Architecture
-- **Client Storage**: Writes to **IndexedDB** first (`notices`, `meets`, `chat_messages`, `sync_outbox`).
-- **Outbox Queue**: When network is weak or offline (Airplane mode), mutations (`CREATE_NOTICE`, `SUBMIT_ATTENDANCE`, `PAY_DUES`, `SEND_CHAT`) are buffered in `sync_outbox`.
-- **Delta Sync**: When reconnected, the client polls `/api/notices/sync?since=<lastSyncTimestamp>` to fetch only what changed.
-- **Client UUIDs**: Records are minted with client-side UUIDs (`not_...`, `msg_...`), preventing ID collisions and eliminating server roundtrips.
-- **Conflict Handling**: Last-Write-Wins (LWW) utilizing monotonically increasing version counters for notices; append-only for chat and attendance.
+2. **Start the server.**
+   ```
+   npm start
+   ```
+   It runs on `http://localhost:3100`.
 
-### 2. Cryptographic Rotating QR Attendance (Works 100% Offline)
-- Meets use a 20-second rotating TOTP-like window:
-  $$\text{timeSlot} = \lfloor \text{Date.now}() / (20 \times 1000) \rfloor$$
-- The organizer displays a signed payload:
-  $$\text{payload} = \text{"CC-MEET:"} + \text{meetId} + ":" + \text{timeSlot} + ":" + \text{HMAC-SHA256}(\text{secretKey}, \text{meetId} + ":" + \text{timeSlot})$$
-- Even if the student has **no network**, their device saves the token and timestamp into the IndexedDB outbox.
-- When reconnected, the server verifies the HMAC signature against the meet's secret key, verifies idempotency (`UNIQUE(meet_id, user_id)`), and awards **+40 Activity Points**.
+3. **Start the website** in a second terminal.
+   ```
+   cd client
+   npm install
+   npm run dev
+   ```
+   Open the address Vite prints, usually `http://localhost:3001` or the next free port.
 
-### 3. Activity & Inactivity Tracking (Exponential Time-Decay)
-- rolling 30-day window with mathematical decay formula:
-  $$\text{Score} = \sum (\text{BaseWeight} \times e^{-0.05 \times \text{daysAgo}})$$
-- **Weights**:
-  - Meet Attended: $+40$
-  - Dues Paid: $+25$
-  - Notice Posted: $+20$
-  - Meet RSVP: $+10$
-  - Chat Message: $+5$
-- **Statuses**:
-  - $\ge 50$: **Active** (Green)
-  - $20 - 49$: **At Risk** (Amber warning banner + personalized recovery suggestion)
-  - $< 20$: **Inactive** (Red)
+## Configuration
 
-### 4. Automated Title & Badge Engine
-- Rules evaluate on every activity event:
-  - **👑 Founding Member**: Joined during society formation.
-  - **🔥 Consistent**: Attended $\ge 2$ meets consecutively.
-  - **⚡ Top Contributor**: 30-day activity score $\ge 60$.
-  - **🏛️ Society Pillar**: 30-day activity score $\ge 100$.
-  - **💎 Patron**: Membership dues paid.
+All settings are environment variables on the server.
 
-### 5. Transparent Society Treasury & Digital Tickets
-- Membership dues payment generates a cryptographically signed digital ticket QR code verifiable offline at events.
-- **Append-Only Public Ledger**: Members can inspect every credit (dues, ticket sales) and debit (ESP32 hardware, refreshments) with real-time treasury balances.
+| Variable | Purpose | Default |
+|---|---|---|
+| `GEMINI_API_KEY` | Your Gemini API key (required) | none |
+| `GEMINI_MODELS` | Comma-separated models, tried in order | `gemini-3.8-flash` |
+| `PORT` | Server port | `3100` |
+| `DB_PATH` | Where the SQLite file is stored | `ai-server/examsprint.db` |
+| `DAILY_GENERATE_LIMIT` | Generations per student per day | `15` |
+| `DAILY_CHAT_LIMIT` | Chat messages per student per day | `100` |
+| `CONCURRENCY` | PDFs processed at the same time | `1` |
 
-### 6. Interactive Network Simulator (Built-in Demo Bar)
-The top toolbar lets you toggle:
-1. **Online**: High-speed live connection.
-2. **Flaky 2G**: Injects $800-1500\text{ms}$ latency and $10\%$ packet drops.
-3. **Airplane Mode (Offline)**: Cuts all network access. Watch notices, meet check-ins, and payments queue in IndexedDB outbox and sync automatically upon reconnection!
+## Deploy on Render
 
----
+The server also serves the built website, so the whole app runs as one web service.
 
-## 🧪 Testing
+- **Build command:** `cd client && npm install --include=dev && npm run build && cd ../ai-server && npm install`
+- **Start command:** `cd ai-server && npm start`
+- **Environment variables:** `GEMINI_API_KEY`, `GEMINI_MODELS`, `NODE_VERSION`
+- **To keep accounts and saved material across restarts:** use a paid instance, attach a persistent disk (for example mounted at `/var/data`), and set `DB_PATH=/var/data/examsprint.db`.
 
-Run backend unit and integration tests:
-```bash
-cd server
-npm test
-```
-*All tests pass with 100% test coverage for HMAC verification, database integrity, and activity decay.*
+## Known limitations
+
+- On the free hosting plan the database is not persistent, so accounts and saved material can be lost when the server restarts or redeploys.
+- The free plan sleeps after about 15 minutes without visitors, and large PDFs (around 12 MB or more) can be slow or fail on its limited memory.
+- Gemini's free tier has rate limits, so generating several PDFs can take a few minutes.
+- Output quality depends on the quality of the uploaded PDFs. Scanned or handwritten pages may be read poorly.
