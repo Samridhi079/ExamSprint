@@ -6,6 +6,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { initRag, indexFiles, retrieve, buildContext, sourcesMarkdown } from './rag.js';
 
 const app = express();
 app.use(cors());
@@ -89,6 +90,7 @@ CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, roll TEXT NOT NULL,
 CREATE TABLE IF NOT EXISTS state (roll TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, updated INTEGER NOT NULL, PRIMARY KEY (roll, key));
 CREATE TABLE IF NOT EXISTS usage (roll TEXT NOT NULL, day TEXT NOT NULL, kind TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (roll, day, kind));
 `);
+initRag(db);
 const here = path.dirname(fileURLToPath(import.meta.url));
 // Optional: put approved roll numbers (one per line) in ai-server/allowed-rolls.txt and only those can sign up.
 const allowFile = path.join(here, 'allowed-rolls.txt');
@@ -242,12 +244,18 @@ Return ONLY valid JSON:
     }
     log('All done.');
     res.json(merged);
+    // Index the course PDFs for chat. Runs after the answer is sent, and its errors never reach the student.
+    indexFiles(db, req.user.roll, subject, notes).catch(e => log('Indexing failed: ' + e.message));
   } catch (e) { log('Error: ' + e.message); res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/chat', auth, quota('chat', Number(process.env.DAILY_CHAT_LIMIT) || 100), async (req, res) => {
   try {
     const { subject, notes, question } = req.body;
+    let hits = [];
+    try { hits = await retrieve(db, req.user.roll, subject, question); } catch (e) { log('Retrieval failed, using the notes instead: ' + e.message); }
+    const ctx = hits.length ? buildContext(hits) : String(notes || '').slice(0, 120000);
+    const srcMd = sourcesMarkdown(hits);
     const prompt = `You are a friendly, patient tutor for "${subject}". Answer the student's question using these notes.
 - Explain in detail but in simple words, step by step, as if teaching someone who is new to the topic.
 - Define any technical term in plain words, and give an everyday analogy or a small example where it helps.
@@ -261,12 +269,13 @@ flowchart TD
   Diagram rules (Mermaid): use only "flowchart TD", "flowchart LR", "stateDiagram-v2" or "sequenceDiagram". Put every node label in double quotes, for example A["Star hub"]. Use at most 12 nodes, short labels, and no other special characters outside quotes.
   Never draw diagrams with text characters such as dashes or pipes. Add one or two sentences under each diagram explaining it.
 - If the student asks for a particular style, follow it.
+- When the notes are labelled [Source n], base the answer on them and mention which source you used, like (Source 2).
 
 NOTES:
-${String(notes || '').slice(0, 120000)}
+${ctx}
 
 STUDENT QUESTION: ${String(question || '').slice(0, 2000)}`;
-    res.json({ answer: await gemini([{ text: prompt }], false) });
+    res.json({ answer: (await gemini([{ text: prompt }], false)) + srcMd });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
